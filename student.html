@@ -1,0 +1,283 @@
+<!DOCTYPE html>
+<html lang="tr">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+<meta name="theme-color" content="#2196f3">
+<title>Öğrenci - QR Yoklama</title>
+<link rel="manifest" href="manifest.json">
+<style>
+  * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+  body { font-family: system-ui, -apple-system, sans-serif; margin: 0; padding: 12px; background: #f5f5f5; color: #222; }
+  h1 { font-size: 18px; margin: 6px 0 12px; }
+  .card { background: white; border-radius: 12px; padding: 14px; margin-bottom: 12px; box-shadow: 0 1px 3px rgba(0,0,0,.08); }
+  label { display: block; font-size: 13px; color: #555; margin: 6px 0 4px; }
+  input, button { font-size: 16px; padding: 10px; border-radius: 8px; border: 1px solid #ccc; width: 100%; }
+  button { background: #2196f3; color: white; border: none; cursor: pointer; margin-top: 8px; font-weight: 500; }
+  button:disabled { background: #999; cursor: not-allowed; }
+  button.danger { background: #f44336; }
+  button.success { background: #4caf50; }
+  .code-display { font-size: 52px; text-align: center; font-weight: bold; letter-spacing: 8px; color: #1565c0; padding: 16px; background: #e3f2fd; border-radius: 12px; font-variant-numeric: tabular-nums; }
+  #qrContainer { display: flex; justify-content: center; align-items: center; min-height: 240px; }
+  #qrContainer img, #qrContainer canvas { border: 4px solid #fff; border-radius: 8px; }
+  .hint { color: #666; font-size: 13px; text-align: center; margin-top: 8px; }
+  .status { padding: 10px; border-radius: 8px; margin-top: 8px; font-size: 14px; }
+  .status.ok    { background: #e8f5e9; color: #2e7d32; }
+  .status.warn  { background: #fff8e1; color: #ef6c00; }
+  .status.err   { background: #ffebee; color: #c62828; }
+</style>
+</head>
+<body>
+<h1>👨‍🎓 Öğrenci Yoklama Uygulaması</h1>
+
+<div class="card">
+  <label>Öğrenci Numaranız</label>
+  <input type="text" id="studentNo" inputmode="numeric" placeholder="örn. 2024001">
+  <button id="startBtn">🎤 Dinlemeyi Başlat</button>
+  <button id="stopBtn" class="danger" disabled>⏹️ Durdur</button>
+  <div class="hint">Mikrofon izni gerekir. Gürültü engelleme kapalıdır.</div>
+</div>
+
+<div class="card">
+  <label>Algılanan Kod</label>
+  <div class="code-display" id="detectedCode">----</div>
+  <div id="status" class="status" style="display:none"></div>
+</div>
+
+<div class="card">
+  <label>Manuel Kod Girişi (Fallback)</label>
+  <input type="text" id="manualCode" maxlength="4" inputmode="numeric" placeholder="4 haneli kod">
+  <button id="manualBtn" class="success">Manuel Kodu Kullan</button>
+</div>
+
+<div class="card">
+  <div id="qrContainer"></div>
+  <div class="hint">Bu QR kodu hocanıza gösterin</div>
+</div>
+
+<script src="https://cdn.jsdelivr.net/npm/qrcodejs@1.0.0/qrcode.min.js"></script>
+<script>
+/* =========================================================
+   Yardımcılar
+   ========================================================= */
+const $ = (id) => document.getElementById(id);
+const setStatus = (kind, msg) => {
+  const el = $('status');
+  if (!msg) { el.style.display = 'none'; return; }
+  el.className = 'status ' + kind;
+  el.textContent = msg;
+  el.style.display = 'block';
+};
+
+/* =========================================================
+   QR güncelleme
+   ========================================================= */
+let qrObj = null;
+let lastShownCode = null;
+
+function updateQR(code) {
+  const studentNo = $('studentNo').value.trim();
+  if (!/^\d{4}$/.test(code)) return;
+  if (!studentNo) { setStatus('warn', 'Önce öğrenci numaranızı girin.'); return; }
+  if (code === lastShownCode) return;
+  lastShownCode = code;
+  $('detectedCode').textContent = code;
+  const payload = `STD:${studentNo}:${code}`;
+  const container = $('qrContainer');
+  container.innerHTML = '';
+  qrObj = new QRCode(container, {
+    text: payload,
+    width: 220,
+    height: 220,
+    correctLevel: QRCode.CorrectLevel.M
+  });
+}
+
+/* =========================================================
+   DTMF algılama
+   ========================================================= */
+const DTMF_ROWS = [697, 770, 852, 941];
+const DTMF_COLS = [1209, 1336, 1477, 1633];
+const DTMF_MAP = {
+  '697-1209':'1','697-1336':'2','697-1477':'3',
+  '770-1209':'4','770-1336':'5','770-1477':'6',
+  '852-1209':'7','852-1336':'8','852-1477':'9',
+  '941-1336':'0'
+};
+
+function goertzelNorm(samples, sr, freq) {
+  const N = samples.length;
+  const k = Math.round(N * freq / sr);
+  const w = 2 * Math.PI * k / N;
+  const coeff = 2 * Math.cos(w);
+  let s0 = 0, s1 = 0, s2 = 0;
+  for (let i = 0; i < N; i++) {
+    s0 = samples[i] + coeff * s1 - s2;
+    s2 = s1; s1 = s0;
+  }
+  const mag = s1 * s1 + s2 * s2 - coeff * s1 * s2;
+  return mag / (N * N / 4);
+}
+
+class DTMFDetector {
+  constructor(sampleRate, onCode) {
+    this.sr = sampleRate;
+    this.onCode = onCode;
+    this.buffer = [];
+    this.state = 'IDLE';     // IDLE | TONE
+    this.codeBuf = '';
+    this.silenceStart = null;
+    this.toneStart = null;
+    this.lastDigit = null;
+  }
+  push(samples) {
+    const now = performance.now();
+    // Normalize
+    let tot = 0;
+    for (let i = 0; i < samples.length; i++) tot += samples[i] * samples[i];
+    const N = samples.length;
+
+    const rowMags = DTMF_ROWS.map(f => goertzelNorm(samples, this.sr, f));
+    const colMags = DTMF_COLS.map(f => goertzelNorm(samples, this.sr, f));
+    const maxRow = Math.max(...rowMags);
+    const maxCol = Math.max(...colMags);
+    const rowIdx = rowMags.indexOf(maxRow);
+    const colIdx = colMags.indexOf(maxCol);
+
+    // Normalize total power to same scale as goertzel output
+    const totalNorm = tot / (N / 2);
+    const ratio = (maxRow + maxCol) / Math.max(totalNorm, 1e-6);
+    const isTone = ratio > 0.2 && totalNorm > 1e-4;
+
+    if (isTone) {
+      this.silenceStart = null;
+      if (this.state === 'IDLE') {
+        this.state = 'TONE';
+        this.toneStart = now;
+        const key = `${DTMF_ROWS[rowIdx]}-${DTMF_COLS[colIdx]}`;
+        const digit = DTMF_MAP[key];
+        if (digit && this.codeBuf.length < 4) {
+          this.codeBuf += digit;
+          $('detectedCode').textContent = this.codeBuf.padEnd(4, '_');
+        }
+      }
+      // TONE state içindeyken ek digit ekleme
+    } else {
+      if (this.silenceStart === null) this.silenceStart = now;
+      const silenceMs = now - this.silenceStart;
+      if (silenceMs > 200 && this.state === 'TONE') {
+        this.state = 'IDLE';
+      }
+      // Uzun sessizlik → tamponu kontrol et
+      if (silenceMs > 1500 && this.codeBuf.length > 0) {
+        if (this.codeBuf.length === 4) {
+          const code = this.codeBuf;
+          this.codeBuf = '';
+          $('detectedCode').textContent = code;
+          this.onCode(code);
+        } else {
+          this.codeBuf = '';
+          $('detectedCode').textContent = '----';
+          setStatus('warn', 'Yarım kod algılandı, sıfırlandı. Yeni kod bekleniyor…');
+        }
+      }
+    }
+  }
+}
+
+/* =========================================================
+   Mikrofon dinleme
+   ========================================================= */
+let audioCtx = null;
+let micStream = null;
+let processor = null;
+let detector = null;
+let listening = false;
+
+async function startListening() {
+  if (listening) return;
+  const studentNo = $('studentNo').value.trim();
+  if (!studentNo) { setStatus('warn', 'Önce öğrenci numaranızı girin.'); return; }
+
+  try {
+    micStream = await navigator.mediaDevices.getUserMedia({
+      audio: {
+        echoCancellation: false,
+        noiseSuppression: false,
+        autoGainControl: false
+      }
+    });
+    audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+    const src = audioCtx.createMediaStreamSource(micStream);
+    const bufferSize = 4096;
+    processor = audioCtx.createScriptProcessor(bufferSize, 1, 1);
+
+    detector = new DTMFDetector(audioCtx.sampleRate, (code) => {
+      updateQR(code);
+      setStatus('ok', `✅ Yeni kod alındı: ${code}`);
+    });
+
+    processor.onaudioprocess = (e) => {
+      const data = e.inputBuffer.getChannelData(0);
+      // time domain üzerinde çalış
+      detector.push(new Float32Array(data));
+    };
+
+    src.connect(processor);
+    // Sessiz bir gain'e bağla (hoparlöre gitmesin)
+    const silent = audioCtx.createGain();
+    silent.gain.value = 0;
+    processor.connect(silent);
+    silent.connect(audioCtx.destination);
+
+    listening = true;
+    $('startBtn').disabled = true;
+    $('stopBtn').disabled = false;
+    setStatus('ok', '🎤 Dinleniyor… Hocanın kodunu bekliyorum.');
+  } catch (e) {
+    setStatus('err', 'Mikrofon başlatılamadı: ' + e.message);
+  }
+}
+
+function stopListening() {
+  listening = false;
+  if (processor) { try { processor.disconnect(); } catch {} processor = null; }
+  if (micStream) { micStream.getTracks().forEach(t => t.stop()); micStream = null; }
+  if (audioCtx) { try { audioCtx.close(); } catch {} audioCtx = null; }
+  if (detector) { detector.codeBuf = ''; detector.state = 'IDLE'; }
+  $('startBtn').disabled = false;
+  $('stopBtn').disabled = true;
+  setStatus('warn', 'Dinleme durduruldu.');
+}
+
+$('startBtn').onclick = startListening;
+$('stopBtn').onclick = stopListening;
+
+/* =========================================================
+   Manuel giriş
+   ========================================================= */
+$('manualBtn').onclick = () => {
+  const code = $('manualCode').value.trim();
+  if (!/^\d{4}$/.test(code)) { setStatus('err', '4 haneli bir kod girin.'); return; }
+  lastShownCode = null; // aynı kod olsa bile yenile
+  updateQR(code);
+  setStatus('ok', `Manuel kod kullanılıyor: ${code}`);
+};
+
+/* =========================================================
+   Numara değişirse QR'ı yenile
+   ========================================================= */
+$('studentNo').addEventListener('input', () => {
+  const code = $('detectedCode').textContent;
+  if (/^\d{4}$/.test(code)) { lastShownCode = null; updateQR(code); }
+});
+
+/* =========================================================
+   SW
+   ========================================================= */
+if ('serviceWorker' in navigator) {
+  navigator.serviceWorker.register('sw.js').catch(() => {});
+}
+</script>
+</body>
+</html>

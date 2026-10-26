@@ -1,0 +1,9 @@
+{
+  "2024001": { "name": "Ahmet", "surname": "Yılmaz", "department": "Bilgisayar Mühendisliği", "program": "Bilgisayar Mühendisliği (İngilizce)", "class": "1" },
+  "2024002": { "name": "Ayşe", "surname": "Demir", "department": "Bilgisayar Mühendisliği", "program": "Bilgisayar Mühendisliği (Türkçe)", "class": "1" },
+  "2024003": { "name": "Mehmet", "surname": "Kaya", "department": "Yazılım Mühendisliği", "program": "Yazılım Mühendisliği", "class": "2" },
+  "2024004": { "name": "Zeynep", "surname": "Şahin", "department": "Bilgisayar Mühendisliği", "program": "Bilgisayar Mühendisliği (İngilizce)", "class": "3" },
+  "2024005": { "name": "Can", "surname": "Öztürk", "department": "Elektrik-Elektronik Müh.", "program": "Elektronik Mühendisliği", "class": "2" },
+  "2024006": { "name": "Elif", "surname": "Çelik", "department": "Yazılım Mühendisliği", "program": "Yazılım Mühendisliği", "class": "1" },
+  "2024007": { "name": "Burak", "surname": "Aydın", "department": "Bilgisayar Mühendisliği", "program": "Bilgisayar Mühendisliği (Türkçe)", "class": "4" }
+}

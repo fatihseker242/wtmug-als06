@@ -1,0 +1,356 @@
+<!DOCTYPE html>
+<html lang="tr">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+<meta name="theme-color" content="#2196f3">
+<title>Hoca - QR Yoklama</title>
+<link rel="manifest" href="manifest.json">
+<style>
+  * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+  body { font-family: system-ui, -apple-system, sans-serif; margin: 0; padding: 12px; background: #f5f5f5; color: #222; }
+  h1 { font-size: 18px; margin: 6px 0 12px; }
+  .card { background: white; border-radius: 12px; padding: 14px; margin-bottom: 12px; box-shadow: 0 1px 3px rgba(0,0,0,.08); }
+  label { display: block; font-size: 13px; color: #555; margin: 6px 0 4px; }
+  select, input, button { font-size: 16px; padding: 10px; border-radius: 8px; border: 1px solid #ccc; width: 100%; }
+  button { background: #2196f3; color: white; border: none; cursor: pointer; margin-top: 8px; font-weight: 500; }
+  button:disabled { background: #999; cursor: not-allowed; }
+  button.danger { background: #f44336; }
+  button.success { background: #4caf50; }
+  button.secondary { background: #607d8b; }
+  .code-display { font-size: 56px; text-align: center; font-weight: bold; letter-spacing: 10px; color: #1565c0; padding: 18px; background: #e3f2fd; border-radius: 12px; font-variant-numeric: tabular-nums; }
+  #video { width: 100%; border-radius: 8px; background: #000; }
+  #qrCanvas { display: none; }
+  .student-info { display: flex; gap: 12px; align-items: center; }
+  .student-info img { width: 96px; height: 96px; border-radius: 8px; object-fit: cover; background: #ddd; }
+  .student-info .meta div { font-size: 13px; margin: 2px 0; }
+  .student-info .meta strong { font-size: 16px; }
+  .alert { padding: 12px; border-radius: 8px; margin-top: 8px; font-size: 14px; }
+  .alert.error { background: #ffebee; color: #c62828; }
+  .alert.success { background: #e8f5e9; color: #2e7d32; }
+  .alert.warn { background: #fff8e1; color: #ef6c00; }
+  .inline { display: flex; align-items: center; gap: 8px; margin-top: 8px; font-size: 14px; }
+  .inline input[type=checkbox] { width: auto; }
+</style>
+</head>
+<body>
+<h1>🎓 Hoca Yoklama Uygulaması</h1>
+
+<div class="card">
+  <label>Ders</label>
+  <select id="courseSelect"><option>Yükleniyor...</option></select>
+  <label>Hafta (1–14)</label>
+  <input type="number" id="weekInput" min="1" max="14" value="1">
+  <div class="inline">
+    <input type="checkbox" id="autoCamera">
+    <label for="autoCamera" style="margin:0">Otomatik Kamera (yayın başında açılır, başarılı okumada kapanır)</label>
+  </div>
+</div>
+
+<div class="card">
+  <div class="code-display" id="codeDisplay">----</div>
+  <button id="startBtn">▶️ Yayını Başlat</button>
+  <button id="stopBtn" class="danger" disabled>⏹️ Durdur</button>
+</div>
+
+<div class="card">
+  <button id="cameraBtn" class="secondary">📷 Kamera Aç</button>
+  <div id="cameraBox" style="margin-top:10px; display:none">
+    <video id="video" playsinline muted></video>
+    <canvas id="qrCanvas"></canvas>
+  </div>
+</div>
+
+<div id="result"></div>
+
+<div class="card">
+  <a href="report.html" style="text-decoration:none"><button class="success">📊 Rapor Ekranı</button></a>
+</div>
+
+<script src="https://cdn.jsdelivr.net/npm/jsqr@1.4.0/dist/jsQR.js"></script>
+<script>
+/* =========================================================
+   Genel veriler
+   ========================================================= */
+let students = {};
+let courses = [];
+let selectedCourseId = null;
+
+/* localStorage anahtarları */
+const LS_ATT = 'attendance_v1';
+
+function loadAttendance() {
+  try { return JSON.parse(localStorage.getItem(LS_ATT)) || {}; }
+  catch { return {}; }
+}
+function saveAttendance(a) { localStorage.setItem(LS_ATT, JSON.stringify(a)); }
+
+/* =========================================================
+   DTMF frekansları
+   ========================================================= */
+const DTMF = {
+  '1':[697,1209],'2':[697,1336],'3':[697,1477],
+  '4':[770,1209],'5':[770,1336],'6':[770,1477],
+  '7':[852,1209],'8':[852,1336],'9':[852,1477],
+  '0':[941,1336]
+};
+
+/* =========================================================
+   Verileri yükle
+   ========================================================= */
+async function init() {
+  try {
+    const [sRes, cRes] = await Promise.all([
+      fetch('students.json', { cache: 'no-store' }),
+      fetch('courses.json', { cache: 'no-store' })
+    ]);
+    students = await sRes.json();
+    const cData = await cRes.json();
+    courses = cData.courses || [];
+
+    const sel = document.getElementById('courseSelect');
+    sel.innerHTML = courses.map(c =>
+      `<option value="${c.id}">${c.name}</option>`
+    ).join('');
+    selectedCourseId = courses[0]?.id || null;
+    sel.onchange = () => { selectedCourseId = sel.value; };
+  } catch (e) {
+    document.getElementById('result').innerHTML =
+      `<div class="alert error">Veri yüklenemedi: ${e.message}</div>`;
+  }
+}
+init();
+
+/* =========================================================
+   Ses / DTMF üretimi
+   ========================================================= */
+let audioCtx = null;
+let broadcastInterval = null;
+let currentCode = null;
+const TONE_MS = 650;
+const GAP_MS = 350;
+
+async function ensureAudio() {
+  if (!audioCtx) audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+  if (audioCtx.state === 'suspended') await audioCtx.resume();
+  return audioCtx;
+}
+
+async function playCode(code) {
+  const ctx = await ensureAudio();
+  let t = ctx.currentTime + 0.05;
+  for (const digit of code) {
+    const [f1, f2] = DTMF[digit];
+    const gain = ctx.createGain();
+    gain.gain.value = 0.35;
+    gain.connect(ctx.destination);
+
+    const osc1 = ctx.createOscillator();
+    const osc2 = ctx.createOscillator();
+    osc1.frequency.value = f1;
+    osc2.frequency.value = f2;
+    osc1.type = 'sine';
+    osc2.type = 'sine';
+    osc1.connect(gain);
+    osc2.connect(gain);
+
+    osc1.start(t);
+    osc2.start(t);
+    osc1.stop(t + TONE_MS / 1000);
+    osc2.stop(t + TONE_MS / 1000);
+
+    // Yumuşak sönüm
+    gain.gain.setValueAtTime(0.35, t + TONE_MS / 1000 - 0.03);
+    gain.gain.linearRampToValueAtTime(0, t + TONE_MS / 1000);
+
+    t += (TONE_MS + GAP_MS) / 1000;
+  }
+}
+
+function rotateCode() {
+  currentCode = String(Math.floor(Math.random() * 9000) + 1000);
+  document.getElementById('codeDisplay').textContent = currentCode;
+  playCode(currentCode);
+}
+
+function startBroadcast() {
+  if (broadcastInterval) return;
+  rotateCode();
+  broadcastInterval = setInterval(rotateCode, 13000);
+
+  document.getElementById('startBtn').disabled = true;
+  document.getElementById('stopBtn').disabled = false;
+
+  if (document.getElementById('autoCamera').checked) startCamera();
+}
+
+function stopBroadcast() {
+  if (broadcastInterval) { clearInterval(broadcastInterval); broadcastInterval = null; }
+  currentCode = null;
+  document.getElementById('codeDisplay').textContent = '----';
+  document.getElementById('startBtn').disabled = false;
+  document.getElementById('stopBtn').disabled = true;
+}
+
+document.getElementById('startBtn').onclick = startBroadcast;
+document.getElementById('stopBtn').onclick = stopBroadcast;
+
+/* =========================================================
+   Kamera + QR okuma
+   ========================================================= */
+let videoStream = null;
+let scanning = false;
+
+async function startCamera() {
+  if (videoStream) return;
+  try {
+    videoStream = await navigator.mediaDevices.getUserMedia({
+      video: { facingMode: { ideal: 'environment' } },
+      audio: false
+    });
+    const video = document.getElementById('video');
+    video.srcObject = videoStream;
+    await video.play();
+    document.getElementById('cameraBox').style.display = 'block';
+    document.getElementById('cameraBtn').textContent = '📷 Kamerayı Kapat';
+    scanning = true;
+    requestAnimationFrame(scanLoop);
+  } catch (e) {
+    showResult('error', 'Kamera açılamadı: ' + e.message);
+  }
+}
+
+function stopCamera() {
+  if (videoStream) {
+    videoStream.getTracks().forEach(t => t.stop());
+    videoStream = null;
+  }
+  scanning = false;
+  document.getElementById('cameraBox').style.display = 'none';
+  document.getElementById('cameraBtn').textContent = '📷 Kamera Aç';
+}
+
+document.getElementById('cameraBtn').onclick = () => {
+  if (videoStream) stopCamera(); else startCamera();
+};
+
+function scanLoop() {
+  if (!scanning) return;
+  const video = document.getElementById('video');
+  const canvas = document.getElementById('qrCanvas');
+  if (video.readyState === video.HAVE_ENOUGH_DATA && video.videoWidth) {
+    canvas.width = video.videoWidth;
+    canvas.height = video.videoHeight;
+    const ctx = canvas.getContext('2d', { willReadFrequently: true });
+    ctx.drawImage(video, 0, 0);
+    const img = ctx.getImageData(0, 0, canvas.width, canvas.height);
+    const qr = window.jsQR ? window.jsQR(img.data, img.width, img.height) : null;
+    if (qr && qr.data) {
+      handleQR(qr.data);
+    }
+  }
+  requestAnimationFrame(scanLoop);
+}
+
+/* =========================================================
+   QR içeriğini işle: STD:{studentNo}:{code}
+   ========================================================= */
+let lastQRData = null;
+let lastQRTime = 0;
+const QR_COOLDOWN = 2500;
+
+function handleQR(data) {
+  const now = Date.now();
+  if (data === lastQRData && now - lastQRTime < QR_COOLDOWN) return;
+  lastQRData = data;
+  lastQRTime = now;
+
+  const parts = data.split(':');
+  if (parts.length !== 3 || parts[0] !== 'STD') {
+    showResult('error', 'Geçersiz QR kodu formatı.');
+    return;
+  }
+  const [, studentNo, code] = parts;
+
+  if (!currentCode) {
+    showResult('error', 'Önce yayını başlatın.');
+    return;
+  }
+  if (code !== currentCode) {
+    showResult('error', `❌ Kod uyuşmuyor! Gelen: ${code}, Beklenen: ${currentCode}`);
+    return;
+  }
+
+  const student = students[studentNo];
+  if (!student) {
+    showResult('error', `Öğrenci bulunamadı: ${studentNo}`);
+    return;
+  }
+
+  const course = courses.find(c => c.id === selectedCourseId);
+  if (!course) { showResult('error', 'Ders seçili değil.'); return; }
+
+  if (!course.students.includes(studentNo)) {
+    showResult('warn', `⚠️ ${student.name} ${student.surname} bu derse kayıtlı değil!`);
+    return;
+  }
+
+  const week = parseInt(document.getElementById('weekInput').value, 10);
+  if (!(week >= 1 && week <= 14)) {
+    showResult('error', 'Hafta 1–14 arası olmalıdır.');
+    return;
+  }
+
+  const att = loadAttendance();
+  const key = `${selectedCourseId}__${studentNo}`;
+  if (!att[key]) att[key] = [];
+  if (att[key].includes(week)) {
+    showResult('warn', `⚠️ ${student.name} ${student.surname} bu hafta (Hafta ${week}) zaten yoklamaya katıldı.`);
+    return;
+  }
+
+  att[key].push(week);
+  att[key].sort((a, b) => a - b);
+  saveAttendance(att);
+
+  showResult('success', `✅ ${student.name} ${student.surname} — Hafta ${week} yoklamaya eklendi.`);
+  renderStudentCard(student, studentNo);
+
+  if (document.getElementById('autoCamera').checked) {
+    stopCamera();
+  }
+}
+
+function showResult(type, msg) {
+  document.getElementById('result').innerHTML =
+    `<div class="card"><div class="alert ${type}">${msg}</div></div>`;
+}
+
+function renderStudentCard(student, studentNo) {
+  const photoPath = `photos/${studentNo}.jpeg`;
+  const el = document.getElementById('result');
+  el.innerHTML = `
+    <div class="card">
+      <div class="student-info">
+        <img src="${photoPath}" alt="Foto"
+             onerror="this.style.background='#ddd';this.replaceWith(Object.assign(document.createElement('div'),{textContent:'📷',style:'width:96px;height:96px;display:flex;align-items:center;justify-content:center;background:#ddd;border-radius:8px;font-size:32px'}))">
+        <div class="meta">
+          <strong>${student.name} ${student.surname}</strong>
+          <div>No: ${studentNo}</div>
+          <div>Bölüm: ${student.department}</div>
+          <div>Program: ${student.program}</div>
+          <div>Sınıf: ${student.class}</div>
+        </div>
+      </div>
+    </div>`;
+}
+
+/* =========================================================
+   Service Worker
+   ========================================================= */
+if ('serviceWorker' in navigator) {
+  navigator.serviceWorker.register('sw.js').catch(() => {});
+}
+</script>
+</body>
+</html>

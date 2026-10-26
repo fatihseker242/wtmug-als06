@@ -1,0 +1,8 @@
+{
+  "courses": [
+    { "id": "BLM101", "name": "Programlamaya Giriş", "students": ["2024001","2024002","2024003","2024005","2024006"] },
+    { "id": "BLM201", "name": "Veri Yapıları", "students": ["2024001","2024003","2024004","2024007"] },
+    { "id": "BLM301", "name": "Veritabanı Sistemleri", "students": ["2024002","2024004","2024005","2024007"] },
+    { "id": "YZM101", "name": "Yazılım Mühendisliğine Giriş", "students": ["2024003","2024006"] }
+  ]
+}

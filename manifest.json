@@ -1,0 +1,12 @@
+{
+  "name": "Sesli ve Kriptografik QR Yoklama",
+  "short_name": "QR Yoklama",
+  "start_url": "./",
+  "scope": "./",
+  "display": "standalone",
+  "orientation": "portrait",
+  "background_color": "#f5f5f5",
+  "theme_color": "#2196f3",
+  "lang": "tr",
+  "icons": []
+}
